@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Event": {
+      "title": "Event",
+      "description": "An event being managed by XPO-PASS",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the event" },
+        "company": { "type": "string", "description": "Hosting company" },
+        "date": { "type": "string", "description": "Date of the event" },
+        "location": { "type": "string", "description": "Physical location" },
+        "createdBy": { "type": "string", "description": "UID of the admin who created it" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "company", "location", "createdBy"]
+    },
+    "Attendee": {
+      "title": "Attendee",
+      "description": "A person registered for an event",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phone": { "type": "string" },
+        "company": { "type": "string" },
+        "industry": { "type": "string" },
+        "intent": { "type": "string" },
+        "type": { "type": "string", "enum": ["VISITOR", "EXHIBITOR"] },
+        "eventId": { "type": "string" },
+        "eventLocation": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "email", "eventId"]
+    }
+  },
+  "firestore": {
+    "/events/{eventId}": {
+      "schema": "Event",
+      "description": "Collection of active events"
+    },
+    "/attendees/{attendeeId}": {
+      "schema": "Attendee",
+      "description": "Collection of registered attendees"
+    },
+    "/admins/{adminId}": {
+      "schema": "object",
+      "description": "Explicit list of admin UIDs"
+    }
+  }
+}

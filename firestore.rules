@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() { 
+      return isSignedIn() && 
+             request.auth.token.email_verified == true && 
+             exists(/databases/$(database)/documents/admins/$(request.auth.uid)); 
+    }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+
+    // Validation Helpers
+    function isValidEvent(data) {
+      return data.keys().hasAll(['name', 'company', 'location', 'createdBy', 'createdAt']) &&
+             data.keys().size() == 5 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.company is string && data.company.size() > 0 && data.company.size() <= 100 &&
+             data.location is string && data.location.size() > 0 && data.location.size() <= 200 &&
+             data.createdBy == request.auth.uid &&
+             data.createdAt == request.time;
+    }
+
+    function isValidAttendee(data) {
+      return data.keys().hasAll(['name', 'email', 'phone', 'company', 'industry', 'intent', 'type', 'eventId', 'eventLocation', 'createdAt']) &&
+             // Ensure strict keys
+             data.keys().size() == 10 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.phone is string && data.phone.size() <= 50 &&
+             data.company is string && data.company.size() <= 100 &&
+             data.industry is string && data.industry.size() <= 100 &&
+             data.intent is string && data.intent.size() <= 500 &&
+             data.type in ['VISITOR', 'EXHIBITOR'] &&
+             data.eventId is string && data.eventId.size() <= 128 &&
+             data.eventLocation is string && data.eventLocation.size() <= 200 &&
+             data.createdAt == request.time;
+    }
+
+    // Collections
+    match /events/{eventId} {
+      allow read: if true; 
+      allow create: if isAdmin() && isValidId(eventId) && isValidEvent(incoming());
+      allow delete: if isAdmin() && isValidId(eventId);
+    }
+
+    match /attendees/{attendeeId} {
+      allow create: if isValidId(attendeeId) && isValidAttendee(incoming());
+      allow get, list, delete: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow read: if isAdmin();
+    }
+  }
+}
