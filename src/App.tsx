@@ -137,7 +137,7 @@ const Select = ({ label, options, ...props }: { label: string; options: { value:
 // --- Main App ---
 
 type Role = 'visitor' | 'company' | 'staff' | 'guest';
-type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'staff-auth' | 'verify';
+type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'staff-auth' | 'verify' | 'company-signup';
 
 export default function App() {
   const [view, setView] = useState<View>('landing');
@@ -153,6 +153,14 @@ export default function App() {
   const [verificationCode, setVerificationCode] = useState('');
   const [userEnteredCode, setUserEnteredCode] = useState('');
   const [staffSearch, setStaffSearch] = useState('');
+  const [companySignupData, setCompanySignupData] = useState({
+    companyName: '',
+    userName: '',
+    companySize: '1-10',
+    country: '',
+    eventCount: '1-5',
+    industry: 'Events',
+  });
 
   // Form State
   const [step, setStep] = useState(1);
@@ -527,6 +535,67 @@ export default function App() {
             </motion.div>
           )}
 
+          {view === 'company-signup' && (
+            <motion.div key="c-signup" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto py-12">
+              <div className="text-center mb-12">
+                <Building2 size={48} className="mx-auto text-[#9df9ef] mb-4" />
+                <h2 className="text-4xl font-black mb-2">Company Onboarding</h2>
+                <p className="text-gray-500">Set up your enterprise event infrastructure.</p>
+              </div>
+              <form onSubmit={(e) => { e.preventDefault(); handleSignIn('company'); }} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Input label="Event Company Name" value={companySignupData.companyName} onChange={e => setCompanySignupData({ ...companySignupData, companyName: e.target.value })} required placeholder="Global Expos Ltd" />
+                  <Input label="Your Full Name" value={companySignupData.userName} onChange={e => setCompanySignupData({ ...companySignupData, userName: e.target.value })} required placeholder="Jane Doe" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Select 
+                    label="Company Size" 
+                    value={companySignupData.companySize} 
+                    onChange={e => setCompanySignupData({ ...companySignupData, companySize: e.target.value })}
+                    options={[
+                      { value: '1-10', label: '1-10 Employees' },
+                      { value: '11-50', label: '11-50 Employees' },
+                      { value: '51-200', label: '51-200 Employees' },
+                      { value: '201+', label: '201+ Employees' },
+                    ]} 
+                  />
+                  <Input label="Country" value={companySignupData.country} onChange={e => setCompanySignupData({ ...companySignupData, country: e.target.value })} required placeholder="Kenya" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Select 
+                    label="Annual Events" 
+                    value={companySignupData.eventCount} 
+                    onChange={e => setCompanySignupData({ ...companySignupData, eventCount: e.target.value })}
+                    options={[
+                      { value: '1-5', label: '1-5 Events/Year' },
+                      { value: '6-20', label: '6-20 Events/Year' },
+                      { value: '21+', label: '21+ Events/Year' },
+                    ]} 
+                  />
+                  <Select 
+                    label="Industry Focus" 
+                    value={companySignupData.industry} 
+                    onChange={e => setCompanySignupData({ ...companySignupData, industry: e.target.value })}
+                    options={[
+                      { value: 'Tech', label: 'Technology & AI' },
+                      { value: 'Medical', label: 'Medical & Healthcare' },
+                      { value: 'Finance', label: 'Finance & Fintech' },
+                      { value: 'Agriculture', label: 'Agriculture' },
+                      { value: 'Other', label: 'Other' },
+                    ]} 
+                  />
+                </div>
+                <div className="p-4 bg-[#141414] border border-[#1a1a1a] rounded-2xl text-xs text-gray-500">
+                  By continuing, you will be prompted to authenticate with Google to link your professional dashboard.
+                </div>
+                <div className="flex gap-4">
+                  <Button variant="ghost" className="flex-1" onClick={() => setView('login-company')}>CANCEL</Button>
+                  <Button type="submit" className="flex-[2]">SUBMIT & SIGN IN</Button>
+                </div>
+              </form>
+            </motion.div>
+          )}
+
           {view === 'login-company' && (
             <motion.div key="c-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
               <Building2 size={64} className="mx-auto text-[#9df9ef] mb-8" />
@@ -534,7 +603,7 @@ export default function App() {
               <p className="text-gray-500 mb-12">Manage your events and digital attendee infrastructure.</p>
               <div className="flex flex-col gap-4">
                 <Button onClick={() => handleSignIn('company')} className="w-full">SIGN IN</Button>
-                <Button variant="outline" onClick={() => handleSignIn('company')} className="w-full">CREATE ACCOUNT</Button>
+                <Button variant="outline" onClick={() => setView('company-signup')} className="w-full">CREATE ACCOUNT</Button>
               </div>
               <Button variant="ghost" onClick={() => setView('landing')} className="mt-8">BACK</Button>
             </motion.div>
