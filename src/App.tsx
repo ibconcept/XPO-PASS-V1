@@ -137,7 +137,7 @@ const Select = ({ label, options, ...props }: { label: string; options: { value:
 // --- Main App ---
 
 type Role = 'visitor' | 'company' | 'staff' | 'guest';
-type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'login-visitor' | 'staff-auth';
+type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'staff-auth' | 'verify';
 
 export default function App() {
   const [view, setView] = useState<View>('landing');
@@ -150,6 +150,9 @@ export default function App() {
   const [lastTicket, setLastTicket] = useState<Attendee | null>(null);
   const [staffAuths, setStaffAuths] = useState<any[]>([]);
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [userEnteredCode, setUserEnteredCode] = useState('');
+  const [staffSearch, setStaffSearch] = useState('');
 
   // Form State
   const [step, setStep] = useState(1);
@@ -158,10 +161,20 @@ export default function App() {
     email: '',
     phone: '',
     company: '',
+    role: '',
     industry: 'Technology',
+    referral: '',
     intent: '',
     type: 'VISITOR' as RegistrationType,
   });
+
+  // Derived Companies
+  const companies = Array.from(new Set(events.filter(e => e.companyId && e.company).map(e => JSON.stringify({ id: e.companyId, name: e.company }))))
+    .map((s: string) => JSON.parse(s)) as { id: string; name: string }[];
+
+  const filteredCompanies = companies.filter(c => 
+    c.name.toLowerCase().includes(staffSearch.toLowerCase())
+  );
 
   // Init Connection & Auth
   useEffect(() => {
@@ -235,6 +248,16 @@ export default function App() {
     }
   };
 
+  const handleStaffOTPRequest = (email: string, companyId: string) => {
+    if (!email || !companyId) return;
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setVerificationCode(code);
+    setActiveCompanyId(companyId);
+    setFormData({ ...formData, email }); // Reuse email field for verification screen
+    setView('verify');
+    console.log(`[STAFF OTP] Simulation: ${code}`);
+  };
+
   const visitorLogin = (email: string) => {
     if (!email) return;
     setUser({ uid: 'visitor-temp', email, role: 'visitor' });
@@ -250,19 +273,46 @@ export default function App() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEvent) return;
+    
+    // Generate verification code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    setVerificationCode(code);
+    setView('verify');
+    
+    // In a real app, this is where you'd call an API to send the email
+    console.log(`[SIMULATION] Email sent to ${formData.email} with code: ${code}`);
+  };
+
+  const verifyAndFinalize = async () => {
+    if (userEnteredCode !== verificationCode) {
+      alert('Invalid code.');
+      return;
+    }
+
+    if (!selectedEvent && (user?.role === 'guest' || !user)) {
+      // Staff login scenario via OTP
+      setUser({ uid: 'staff-session', email: formData.email, role: 'staff' });
+      setView('staff-dash');
+      setVerificationCode('');
+      setUserEnteredCode('');
+      return;
+    }
+
     setLoading(true);
     try {
       const data = {
         ...formData,
-        eventId: selectedEvent.name,
-        eventLocation: selectedEvent.location,
-        companyId: selectedEvent.companyId,
+        eventId: selectedEvent?.name,
+        eventLocation: selectedEvent?.location,
+        companyId: selectedEvent?.companyId,
         createdAt: serverTimestamp(),
       };
       const docRef = await addDoc(collection(db, 'attendees'), data);
       setLastTicket({ id: docRef.id, ...data } as Attendee);
       setView('ticket');
       setStep(1);
+      setVerificationCode('');
+      setUserEnteredCode('');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'attendees');
     } finally {
@@ -372,6 +422,7 @@ export default function App() {
               <button className="text-left text-2xl font-bold text-red-500" onClick={handleSignOut}>Logout</button>
             ) : (
               <div className="flex flex-col gap-4 mt-8">
+                <button className="text-left font-bold text-[#9df9ef]" onClick={() => { setView('events'); setMenuOpen(false); }}>Register as Visitor</button>
                 <button className="text-left font-bold text-[#9df9ef]" onClick={() => { setView('login-company'); setMenuOpen(false); }}>Event-Company Portal</button>
                 <button className="text-left font-bold text-[#9df9ef]" onClick={() => { setView('login-staff'); setMenuOpen(false); }}>Event-Staff Portal</button>
               </div>
@@ -399,38 +450,66 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl">
-                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
-                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
-                    <Users size={32} />
+              <div className="flex flex-col gap-4 w-full max-w-sm">
+                <Button onClick={() => setView('events')} className="w-full text-lg h-16 group">
+                  PICK EVENT <ArrowRight size={22} className="group-hover:translate-x-1 transition-transform" />
+                </Button>
+                <div className="flex gap-4">
+                  <Button variant="outline" onClick={() => setView('login-company')} className="flex-1 text-[10px] sm:text-xs">
+                    EVENT COMPANY LOGIN
+                  </Button>
+                  <Button variant="outline" onClick={() => setView('login-staff')} className="flex-1 text-[10px] sm:text-xs">
+                    EVENT STAFF LOGIN
+                  </Button>
+                </div>
+              </div>
+
+              {/* Sponsors Section */}
+              <div className="w-full max-w-5xl mt-12 space-y-8">
+                <div className="flex flex-col items-center">
+                  <span className="text-[10px] font-black tracking-[0.4em] text-[#9df9ef] uppercase mb-4 opacity-80">Sponsors</span>
+                  <div className="flex flex-wrap justify-center gap-12 opacity-100 transition-all duration-700">
+                    {['Google', 'Intel', 'Nvidia', 'Samsung'].map(name => (
+                      <div key={name} className="flex items-center gap-3 font-black text-2xl tracking-tighter hover:text-[#9df9ef] transition-colors">
+                        <div className="w-2 h-2 bg-[#9df9ef] rounded-full" />
+                        {name}
+                      </div>
+                    ))}
                   </div>
-                  <div>
-                    <h3 className="font-black text-xl mb-2">Visitor</h3>
-                    <p className="text-sm text-gray-500">Register and download your access ticket.</p>
-                  </div>
-                  <Button onClick={() => setView('login-visitor')} className="w-full">ENTER</Button>
                 </div>
 
-                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
-                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
-                    <Building2 size={32} />
+                {/* Used By Marquee */}
+                <div className="relative pt-12">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-[#1a1a1a]"></div>
                   </div>
-                  <div>
-                    <h3 className="font-black text-xl mb-2">Event-Company</h3>
-                    <p className="text-sm text-gray-500">Deploy events and manage attendee groups.</p>
+                  <div className="relative flex justify-center">
+                    <span className="bg-[#0a0a0a] px-6 text-xs font-bold text-gray-400 uppercase tracking-widest text-center">Event Companies Using XPOPASS</span>
                   </div>
-                  <Button variant="outline" onClick={() => setView('login-company')} className="w-full">PORTAL</Button>
                 </div>
 
-                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
-                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
-                    <ShieldCheck size={32} />
+                <div className="w-full overflow-hidden py-16 bg-[#0d0d0d] rounded-[3rem] border border-[#1a1a1a] mt-8">
+                  <div className="flex gap-24 whitespace-nowrap animate-infinite-scroll w-max items-center">
+                    {[
+                      'APPLE', 'MICROSOFT', 'AMAZON', 'TESLA', 'ADOBE', 'SALESFORCE', 'SLACK', 'SPOTIFY'
+                    ].map((name, idx) => (
+                      <div key={idx} className="flex items-center justify-center min-w-[120px]">
+                        <span className="text-3xl md:text-5xl font-black text-[#1a1a1a] hover:text-[#9df9ef] transition-colors cursor-default tracking-tighter">
+                          {name}
+                        </span>
+                      </div>
+                    ))}
+                    {/* Duplicate for seamless loop */}
+                    {[
+                      'APPLE', 'MICROSOFT', 'AMAZON', 'TESLA', 'ADOBE', 'SALESFORCE', 'SLACK', 'SPOTIFY'
+                    ].map((name, idx) => (
+                      <div key={`dup-${idx}`} className="flex items-center justify-center min-w-[120px]">
+                        <span className="text-3xl md:text-5xl font-black text-[#1a1a1a] hover:text-[#9df9ef] transition-colors cursor-default tracking-tighter">
+                          {name}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                  <div>
-                    <h3 className="font-black text-xl mb-2">Event-Staff</h3>
-                    <p className="text-sm text-gray-500">Access registers for authorized events.</p>
-                  </div>
-                  <Button variant="outline" onClick={() => setView('login-staff')} className="w-full">ACCESS</Button>
                 </div>
               </div>
             </motion.div>
@@ -452,19 +531,62 @@ export default function App() {
             <motion.div key="c-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
               <Building2 size={64} className="mx-auto text-[#9df9ef] mb-8" />
               <h2 className="text-4xl font-black mb-4">Company Portal</h2>
-              <p className="text-gray-500 mb-12">Login to manage your events and staff.</p>
-              <Button onClick={() => handleSignIn('company')} className="w-full">LOGIN WITH GOOGLE</Button>
-              <Button variant="ghost" onClick={() => setView('landing')} className="mt-4">BACK</Button>
+              <p className="text-gray-500 mb-12">Manage your events and digital attendee infrastructure.</p>
+              <div className="flex flex-col gap-4">
+                <Button onClick={() => handleSignIn('company')} className="w-full">SIGN IN</Button>
+                <Button variant="outline" onClick={() => handleSignIn('company')} className="w-full">CREATE ACCOUNT</Button>
+              </div>
+              <Button variant="ghost" onClick={() => setView('landing')} className="mt-8">BACK</Button>
             </motion.div>
           )}
 
           {view === 'login-staff' && (
-            <motion.div key="s-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
-              <ShieldCheck size={64} className="mx-auto text-[#9df9ef] mb-8" />
-              <h2 className="text-4xl font-black mb-4">Staff Portal</h2>
-              <p className="text-gray-500 mb-12">Authorized staff login via email key.</p>
-              <Button onClick={() => handleSignIn('staff')} className="w-full">LOGIN WITH GOOGLE</Button>
-              <Button variant="ghost" onClick={() => setView('landing')} className="mt-4">BACK</Button>
+            <motion.div key="s-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-12">
+              <div className="text-center mb-12">
+                <ShieldCheck size={48} className="mx-auto text-[#9df9ef] mb-4" />
+                <h2 className="text-4xl font-black mb-2">Staff Portal</h2>
+                <p className="text-gray-500">Access registers via authorized code.</p>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <Input 
+                    label="Search Company" 
+                    value={staffSearch} 
+                    onChange={e => setStaffSearch(e.target.value)} 
+                    placeholder="Type to search..." 
+                  />
+                  <div className="max-h-48 overflow-y-auto bg-[#141414] border border-[#1a1a1a] rounded-xl divide-y divide-[#1a1a1a] mt-2">
+                    {filteredCompanies.map(c => (
+                      <button
+                        key={c.id}
+                        onClick={() => setActiveCompanyId(c.id)}
+                        className={cn(
+                          "w-full text-left px-4 py-3 text-sm hover:bg-white/5 transition-colors flex justify-between items-center",
+                          activeCompanyId === c.id ? "text-[#9df9ef] bg-[#9df9ef]/5" : "text-gray-400"
+                        )}
+                      >
+                        {c.name}
+                        {activeCompanyId === c.id && <CheckCircle2 size={14} />}
+                      </button>
+                    ))}
+                    {filteredCompanies.length === 0 && (
+                      <div className="p-4 text-center text-xs text-gray-600 italic">No companies found</div>
+                    )}
+                  </div>
+                </div>
+
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const target = e.target as any;
+                  if (!activeCompanyId) { alert('Please select a company first'); return; }
+                  handleStaffOTPRequest(target.email.value, activeCompanyId);
+                }}>
+                  <Input label="Your Staff Email" name="email" type="email" required placeholder="staff@company.com" />
+                  <Button type="submit" className="w-full">REQUEST ACCESS CODE</Button>
+                </form>
+              </div>
+              <Button variant="ghost" onClick={() => setView('landing')} className="w-full mt-4">BACK</Button>
             </motion.div>
           )}
 
@@ -495,25 +617,97 @@ export default function App() {
             <motion.div key="form" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto py-12">
               <div className="text-center mb-12">
                 <p className="text-[#9df9ef] font-black text-xl">Register for {selectedEvent?.name}</p>
+                <div className="flex gap-1 justify-center mt-4">
+                  {[1, 2, 3, 4, 5].map(s => (
+                    <div key={s} className={cn("h-1 w-8 rounded-full transition-colors", step >= s ? "bg-[#9df9ef]" : "bg-[#1a1a1a]")} />
+                  ))}
+                </div>
               </div>
               <form onSubmit={handleRegister} className="space-y-6">
                 {step === 1 && (
-                  <>
-                    <Input label="Full Name" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required />
-                    <Input label="Email" type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} required />
-                  </>
+                  <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                    <Input label="Full Name" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required placeholder="John Doe" />
+                    <Input label="Email Address" type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} required placeholder="john@example.com" />
+                  </motion.div>
                 )}
                 {step === 2 && (
-                  <>
-                    <Input label="Phone Number" type="tel" value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} required />
-                    <Input label="Company" value={formData.company} onChange={e => setFormData({ ...formData, company: e.target.value })} required />
-                  </>
+                  <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                    <Input label="Phone Number" type="tel" value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} required placeholder="+254 ..." />
+                    <Input label="Organization / Company" value={formData.company} onChange={e => setFormData({ ...formData, company: e.target.value })} required placeholder="Mainadev Ltd" />
+                  </motion.div>
+                )}
+                {step === 3 && (
+                  <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                    <Input label="Job Title / Role" value={formData.role} onChange={e => setFormData({ ...formData, role: e.target.value })} required placeholder="Software Engineer" />
+                    <Select 
+                      label="Industry" 
+                      value={formData.industry} 
+                      onChange={e => setFormData({ ...formData, industry: e.target.value })}
+                      options={[
+                        { value: 'Technology', label: 'Technology' },
+                        { value: 'Finance', label: 'Finance' },
+                        { value: 'Creative', label: 'Creative' },
+                        { value: 'Health', label: 'Health' },
+                        { value: 'Energy', label: 'Energy' },
+                        { value: 'Other', label: 'Other' },
+                      ]} 
+                    />
+                  </motion.div>
+                )}
+                {step === 4 && (
+                  <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                    <Input label="Where did you hear about us?" value={formData.referral} onChange={e => setFormData({ ...formData, referral: e.target.value })} required placeholder="Twitter, Linkedin, Friend..." />
+                    <Input label="Primary Goal for attending" value={formData.intent} onChange={e => setFormData({ ...formData, intent: e.target.value })} required placeholder="Networking, Learning, Partnership..." />
+                  </motion.div>
+                )}
+                {step === 5 && (
+                  <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }}>
+                    <Select 
+                      label="Registration Type" 
+                      value={formData.type} 
+                      onChange={e => setFormData({ ...formData, type: e.target.value as RegistrationType })}
+                      options={[
+                        { value: 'VISITOR', label: 'Visitor' },
+                        { value: 'EXHIBITOR', label: 'Exhibitor' },
+                      ]} 
+                    />
+                    <div className="p-4 bg-[#141414] border border-[#1a1a1a] rounded-2xl text-xs text-gray-500">
+                      <p>By clicking "GET PASS", you agree to receive a verification code on your provided email address to finalize your registration.</p>
+                    </div>
+                  </motion.div>
                 )}
                 <div className="flex gap-4">
                   {step > 1 && <Button variant="outline" onClick={() => setStep(step - 1)}>BACK</Button>}
-                  {step < 2 ? <Button className="flex-1" onClick={() => setStep(step + 1)}>CONTINUE</Button> : <Button type="submit" className="flex-1">FINALIZE</Button>}
+                  {step < 5 ? (
+                    <Button className="flex-1" onClick={() => setStep(step + 1)}>CONTINUE</Button>
+                  ) : (
+                    <Button type="submit" className="flex-1">GET PASS</Button>
+                  )}
                 </div>
               </form>
+            </motion.div>
+          )}
+
+          {view === 'verify' && (
+            <motion.div key="verify" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
+              <h2 className="text-4xl font-black mb-4">Email Verification</h2>
+              <p className="text-gray-500 mb-12">
+                We've sent a 6-digit access code to <span className="text-[#9df9ef]">{formData.email}</span>. Please enter it below to download your pass.
+              </p>
+              <Input 
+                label="Verification Code" 
+                value={userEnteredCode} 
+                onChange={e => setUserEnteredCode(e.target.value)} 
+                placeholder="000000"
+                maxLength={6}
+                className="text-center text-3xl tracking-[1em]"
+              />
+              <Button onClick={verifyAndFinalize} className="w-full">VERIFY & GENERATE PASS</Button>
+              <Button variant="ghost" onClick={() => setView('form')} className="mt-4">BACK TO FORM</Button>
+              
+              <div className="mt-12 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl text-xs text-yellow-500/80">
+                <p>DEMO MODE: The simulated code is <span className="font-black text-white">{verificationCode}</span></p>
+              </div>
             </motion.div>
           )}
 

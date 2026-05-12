@@ -23,11 +23,14 @@ export interface Attendee {
   email: string;
   phone: string;
   company: string;
+  role: string;
   industry: string;
+  referral: string;
   intent: string;
   type: RegistrationType;
   eventId: string;
   eventLocation: string;
+  companyId: string;
   createdAt: any;
 }
 
