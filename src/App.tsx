@@ -137,7 +137,7 @@ const Select = ({ label, options, ...props }: { label: string; options: { value:
 // --- Main App ---
 
 type Role = 'visitor' | 'company' | 'staff' | 'guest';
-type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'staff-auth' | 'verify' | 'company-signup';
+type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'staff-auth' | 'verify' | 'company-signup' | 'company-link';
 
 export default function App() {
   const [view, setView] = useState<View>('landing');
@@ -276,6 +276,22 @@ export default function App() {
     await signOut(auth);
     setUser({ uid: 'temp', email: null, role: 'guest' });
     setView('landing');
+  };
+
+  const handleCompanySignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'company_onboarding'), {
+        ...companySignupData,
+        createdAt: serverTimestamp(),
+      });
+      setView('company-link');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'company_onboarding');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -542,7 +558,7 @@ export default function App() {
                 <h2 className="text-4xl font-black mb-2">Company Onboarding</h2>
                 <p className="text-gray-500">Set up your enterprise event infrastructure.</p>
               </div>
-              <form onSubmit={(e) => { e.preventDefault(); handleSignIn('company'); }} className="space-y-6">
+              <form onSubmit={handleCompanySignup} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <Input label="Event Company Name" value={companySignupData.companyName} onChange={e => setCompanySignupData({ ...companySignupData, companyName: e.target.value })} required placeholder="Global Expos Ltd" />
                   <Input label="Your Full Name" value={companySignupData.userName} onChange={e => setCompanySignupData({ ...companySignupData, userName: e.target.value })} required placeholder="Jane Doe" />
@@ -586,13 +602,29 @@ export default function App() {
                   />
                 </div>
                 <div className="p-4 bg-[#141414] border border-[#1a1a1a] rounded-2xl text-xs text-gray-500">
-                  By continuing, you will be prompted to authenticate with Google to link your professional dashboard.
+                  By submitting, you agree to our Terms of Service for Event Organizers.
                 </div>
                 <div className="flex gap-4">
                   <Button variant="ghost" className="flex-1" onClick={() => setView('login-company')}>CANCEL</Button>
-                  <Button type="submit" className="flex-[2]">SUBMIT & SIGN IN</Button>
+                  <Button type="submit" className="flex-[2]" disabled={loading}>SUBMIT DETAILS</Button>
                 </div>
               </form>
+            </motion.div>
+          )}
+
+          {view === 'company-link' && (
+            <motion.div key="c-link" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
+              <div className="w-16 h-16 bg-[#9df9ef]/20 text-[#9df9ef] rounded-full flex items-center justify-center mx-auto mb-8">
+                <CheckCircle2 size={32} />
+              </div>
+              <h2 className="text-4xl font-black mb-4">Details Saved</h2>
+              <p className="text-gray-500 mb-12">
+                Your application for <span className="text-[#9df9ef]">{companySignupData.companyName}</span> has been recorded. To access your dashboard, please create your account using Google.
+              </p>
+              <Button onClick={() => handleSignIn('company')} className="w-full h-14 text-lg">
+                CREATE ACCOUNT WITH GOOGLE
+              </Button>
+              <Button variant="ghost" onClick={() => setView('landing')} className="mt-8">GO TO HOMEPAGE</Button>
             </motion.div>
           )}
 
