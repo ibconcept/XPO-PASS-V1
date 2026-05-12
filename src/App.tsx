@@ -8,9 +8,12 @@ import {
   collection, 
   onSnapshot, 
   addDoc, 
+  setDoc,
   serverTimestamp, 
   query, 
   orderBy, 
+  where,
+  limit,
   deleteDoc, 
   doc, 
   getDocFromServer 
@@ -133,17 +136,20 @@ const Select = ({ label, options, ...props }: { label: string; options: { value:
 
 // --- Main App ---
 
-type View = 'landing' | 'events' | 'form' | 'admin' | 'ticket' | 'create-event';
+type Role = 'visitor' | 'company' | 'staff' | 'guest';
+type View = 'landing' | 'events' | 'form' | 'company-dash' | 'staff-dash' | 'ticket' | 'create-event' | 'login-company' | 'login-staff' | 'login-visitor' | 'staff-auth';
 
 export default function App() {
   const [view, setView] = useState<View>('landing');
-  const [user, setUser] = useState<{ uid: string; email: string | null; isAdmin: boolean } | null>(null);
+  const [user, setUser] = useState<{ uid: string; email: string | null; role: Role } | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [lastTicket, setLastTicket] = useState<Attendee | null>(null);
+  const [staffAuths, setStaffAuths] = useState<any[]>([]);
+  const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
 
   // Form State
   const [step, setStep] = useState(1);
@@ -159,31 +165,16 @@ export default function App() {
 
   // Init Connection & Auth
   useEffect(() => {
-    async function testConnection() {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    }
-    testConnection();
-
     onAuthStateChanged(auth, async (u) => {
-      if (u) {
+      if (u && !u.isAnonymous) {
         setLoading(true);
-        // Check if admin
-        const adminDoc = await doc(db, 'admins', u.uid);
-        // We'll just assume they might be for now, or check exists
-        // In a real app we'd fetch the document
         setUser({ 
           uid: u.uid, 
           email: u.email, 
-          isAdmin: false // Will be updated by listeners or explicit fetch
+          role: 'company' // Simplified for now, in real app check collections
         });
       } else {
-        signInAnonymously(auth);
+        setUser({ uid: u?.uid || 'temp', email: null, role: 'guest' });
       }
       setLoading(false);
     });
@@ -194,36 +185,65 @@ export default function App() {
     const qEvents = query(collection(db, 'events'), orderBy('createdAt', 'desc'));
     const unsubEvents = onSnapshot(qEvents, (snap) => {
       setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as Event)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'events'));
+    }, (err) => console.error(err));
 
     return () => unsubEvents();
-  }, [user]);
+  }, []);
 
   useEffect(() => {
-    if (user?.isAdmin || view === 'admin') {
-      const qAttendees = query(collection(db, 'attendees'), orderBy('createdAt', 'desc'));
+    if (user?.role === 'company' || (user?.role === 'staff' && activeCompanyId)) {
+      const targetId = user.role === 'company' ? user.uid : activeCompanyId;
+      const qAttendees = query(
+        collection(db, 'attendees'), 
+        where('companyId', '==', targetId),
+        orderBy('createdAt', 'desc')
+      );
       const unsubAttendees = onSnapshot(qAttendees, (snap) => {
         setAttendees(snap.docs.map(d => ({ id: d.id, ...d.data() } as Attendee)));
-      }, (err) => handleFirestoreError(err, OperationType.LIST, 'attendees'));
+      }, (err) => console.error(err));
+      
       return () => unsubAttendees();
     }
-  }, [user, view]);
+  }, [user, activeCompanyId]);
+
+  useEffect(() => {
+    if (user?.role === 'company' || user?.role === 'staff') {
+      const qAuths = user.role === 'company' 
+        ? query(collection(db, 'staff_authorizations'), where('companyId', '==', user.uid))
+        : query(collection(db, 'staff_authorizations'), where('staffEmail', '==', user.email));
+
+      const unsubAuths = onSnapshot(qAuths, (snap) => {
+        setStaffAuths(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      });
+
+      return () => unsubAuths();
+    }
+  }, [user]);
 
   // Actions
-  const handleSignIn = async () => {
+  const handleSignIn = async (role: Role) => {
     const provider = new GoogleAuthProvider();
     try {
+      setLoading(true);
       const result = await signInWithPopup(auth, provider);
-      // Check if they are in admins collection
-      // (This is reactive, so onSnapshot/useEffect can handle it)
+      setUser({ uid: result.user.uid, email: result.user.email, role });
+      setView(role === 'company' ? 'company-dash' : 'staff-dash');
     } catch (error) {
       console.error(error);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const visitorLogin = (email: string) => {
+    if (!email) return;
+    setUser({ uid: 'visitor-temp', email, role: 'visitor' });
+    setView('events');
   };
 
   const handleSignOut = async () => {
     await signOut(auth);
-    setUser(null);
+    setUser({ uid: 'temp', email: null, role: 'guest' });
     setView('landing');
   };
 
@@ -236,6 +256,7 @@ export default function App() {
         ...formData,
         eventId: selectedEvent.name,
         eventLocation: selectedEvent.location,
+        companyId: selectedEvent.companyId,
         createdAt: serverTimestamp(),
       };
       const docRef = await addDoc(collection(db, 'attendees'), data);
@@ -251,22 +272,43 @@ export default function App() {
 
   const createEvent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) return;
+    if (!user || user.role !== 'company') return;
     const target = e.target as any;
     const newEvent = {
       name: target.name.value,
       company: target.company.value,
       date: target.date.value,
       location: target.location.value,
-      createdBy: user.uid,
+      companyId: user.uid,
       createdAt: serverTimestamp(),
     };
     try {
       setLoading(true);
       await addDoc(collection(db, 'events'), newEvent);
-      setView('admin');
+      setView('company-dash');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'events');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const authorizeStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || user.role !== 'company') return;
+    const target = e.target as any;
+    const staffEmail = target.email.value;
+    try {
+      setLoading(true);
+      await setDoc(doc(db, 'staff_authorizations', `${staffEmail}_${user.uid}`), {
+        companyId: user.uid,
+        staffEmail,
+        authorized: true
+      });
+      alert('Staff authorized');
+      target.reset();
+    } catch (err) {
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -281,12 +323,13 @@ export default function App() {
     }
   };
 
+
   // --- Views ---
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#f0f8ff] font-sans selection:bg-[#9df9ef] selection:text-[#0a0a0a]">
       {/* Navigation */}
-      <nav className="sticky top-0 z-50 bg-[#0a0a0a]/80 backdrop-blur-xl border-bottom border-[#1a1a1a] px-6 py-4 flex justify-between items-center no-print">
+      <nav className="sticky top-0 z-50 bg-[#0a0a0a]/80 backdrop-blur-xl border-b border-[#1a1a1a] px-6 py-4 flex justify-between items-center no-print">
         <div 
           className="text-2xl font-black text-[#9df9ef] cursor-pointer tracking-tighter"
           onClick={() => setView('landing')}
@@ -312,64 +355,26 @@ export default function App() {
           >
             <div className="pb-8 border-b border-[#1a1a1a]">
               <p className="font-black text-xl">{user?.email || 'Guest User'}</p>
-              <p className="text-gray-500 text-sm">{user?.isAdmin ? 'ADMINISTRATOR' : 'VISITOR'}</p>
+              <p className="text-gray-500 text-sm uppercase tracking-widest">{user?.role || 'GUEST'}</p>
             </div>
             
-            <button 
-              className="text-left text-2xl font-bold hover:text-[#9df9ef] transition-colors"
-              onClick={() => { setView('landing'); setMenuOpen(false); }}
-            >
-              Home
-            </button>
-            <button 
-              className="text-left text-2xl font-bold hover:text-[#9df9ef] transition-colors"
-              onClick={() => { setView('events'); setMenuOpen(false); }}
-            >
-              Exhibitions
-            </button>
+            <button className="text-left text-2xl font-bold hover:text-[#9df9ef]" onClick={() => { setView('landing'); setMenuOpen(false); }}>Home</button>
+            <button className="text-left text-2xl font-bold hover:text-[#9df9ef]" onClick={() => { setView('events'); setMenuOpen(false); }}>Events</button>
 
-            {user?.email && (
-              <button 
-                className="text-left text-xs font-bold text-gray-600 hover:text-[#9df9ef] transition-colors mt-8"
-                onClick={async () => {
-                  if(!confirm('Seed sample events?')) return;
-                  const samples = [
-                    { name: 'Nairobi Tech Summit', company: 'TechHub', location: 'Main Hall', date: '2026-06-15' },
-                    { name: 'Design Week 2026', company: 'Creative Collective', location: 'Gallery X', date: '2026-07-20' },
-                    { name: 'Fintech Gala', company: 'Global Bank', location: 'Sky Ballroom', date: '2026-08-05' }
-                  ];
-                  for(const s of samples) {
-                    await addDoc(collection(db, 'events'), { ...s, createdBy: user.uid, createdAt: serverTimestamp() });
-                  }
-                  alert('Sample data seeded');
-                  setMenuOpen(false);
-                }}
-              >
-                * DEV: SEED SAMPLES
-              </button>
+            {user?.role === 'company' && (
+              <button className="text-left text-2xl font-bold hover:text-[#9df9ef]" onClick={() => { setView('company-dash'); setMenuOpen(false); }}>Dashboard</button>
             )}
+            {user?.role === 'staff' && (
+              <button className="text-left text-2xl font-bold hover:text-[#9df9ef]" onClick={() => { setView('staff-dash'); setMenuOpen(false); }}>Registers</button>
+            )}
+
             {user?.email ? (
-              <>
-                <button 
-                  className="text-left text-2xl font-bold hover:text-[#9df9ef] transition-colors"
-                  onClick={() => { setView('admin'); setMenuOpen(false); }}
-                >
-                  Dashboard
-                </button>
-                <button 
-                  className="text-left text-2xl font-bold text-red-500 transition-colors"
-                  onClick={handleSignOut}
-                >
-                  Logout
-                </button>
-              </>
+              <button className="text-left text-2xl font-bold text-red-500" onClick={handleSignOut}>Logout</button>
             ) : (
-              <button 
-                className="text-left text-2xl font-bold hover:text-[#9df9ef] transition-colors"
-                onClick={() => { handleSignIn(); setMenuOpen(false); }}
-              >
-                Staff Portal
-              </button>
+              <div className="flex flex-col gap-4 mt-8">
+                <button className="text-left font-bold text-[#9df9ef]" onClick={() => { setView('login-company'); setMenuOpen(false); }}>Event-Company Portal</button>
+                <button className="text-left font-bold text-[#9df9ef]" onClick={() => { setView('login-staff'); setMenuOpen(false); }}>Event-Staff Portal</button>
+              </div>
             )}
           </motion.div>
         )}
@@ -383,77 +388,102 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="min-h-[80vh] flex flex-col justify-center items-center text-center gap-8"
+              className="min-h-[80vh] flex flex-col justify-center items-center text-center gap-12"
             >
               <div className="space-y-4">
                 <h1 className="text-7xl md:text-9xl font-black tracking-tighter leading-none">
                   XPO<br /><span className="text-[#9df9ef]">PASS</span>
                 </h1>
                 <p className="text-gray-500 font-medium tracking-widest uppercase text-sm">
-                  Mainadev Digital Access Infrastructure
+                  Professional Event Access Ecosystem
                 </p>
               </div>
 
-              <div className="flex flex-col gap-4 w-full max-w-xs">
-                <Button onClick={() => setView('events')} className="w-full">
-                  GET EVENT PASS <ArrowRight size={20} />
-                </Button>
-                <Button variant="outline" onClick={() => setView('admin')} className="w-full">
-                  STAFF PORTAL
-                </Button>
-              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl">
+                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
+                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
+                    <Users size={32} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xl mb-2">Visitor</h3>
+                    <p className="text-sm text-gray-500">Register and download your access ticket.</p>
+                  </div>
+                  <Button onClick={() => setView('login-visitor')} className="w-full">ENTER</Button>
+                </div>
 
-              {/* Decorative Marquee */}
-              <div className="w-full overflow-hidden py-12 border-y border-[#1a1a1a] mt-12">
-                <div className="flex gap-24 whitespace-nowrap animate-infinite-scroll opacity-20 hover:opacity-50 transition-opacity">
-                  {['APPLE', 'IBM', 'GOOGLE', 'SLACK', 'MICROSOFT', 'AMAZON', 'MAINADEV'].map(b => (
-                    <span key={b} className="text-4xl font-black">{b}</span>
-                  ))}
-                  {['APPLE', 'IBM', 'GOOGLE', 'SLACK', 'MICROSOFT', 'AMAZON', 'MAINADEV'].map(b => (
-                    <span key={b + '2'} className="text-4xl font-black">{b}</span>
-                  ))}
+                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
+                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
+                    <Building2 size={32} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xl mb-2">Event-Company</h3>
+                    <p className="text-sm text-gray-500">Deploy events and manage attendee groups.</p>
+                  </div>
+                  <Button variant="outline" onClick={() => setView('login-company')} className="w-full">PORTAL</Button>
+                </div>
+
+                <div className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-[2.5rem] flex flex-col gap-6 items-center text-center">
+                  <div className="w-16 h-16 bg-[#9df9ef]/10 text-[#9df9ef] rounded-full flex items-center justify-center">
+                    <ShieldCheck size={32} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xl mb-2">Event-Staff</h3>
+                    <p className="text-sm text-gray-500">Access registers for authorized events.</p>
+                  </div>
+                  <Button variant="outline" onClick={() => setView('login-staff')} className="w-full">ACCESS</Button>
                 </div>
               </div>
             </motion.div>
           )}
 
-          {view === 'events' && (
-            <motion.div
-              key="events"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="space-y-8"
-            >
-              <div className="flex justify-between items-end">
-                <h2 className="text-4xl font-black text-[#9df9ef]">Active Exhibitions</h2>
-                <p className="text-gray-500 font-bold uppercase text-xs tracking-tighter">Live Systems</p>
-              </div>
+          {view === 'login-visitor' && (
+            <motion.div key="v-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
+              <h2 className="text-4xl font-black mb-8">Visitor Access</h2>
+              <p className="text-gray-500 mb-8">Enter your email to access your digital event pass.</p>
+              <form onSubmit={(e) => { e.preventDefault(); visitorLogin((e.target as any).email.value); }}>
+                <Input label="Email Address" name="email" type="email" required placeholder="visitor@mainadev.com" />
+                <Button type="submit" className="w-full">CONTINUE</Button>
+                <Button variant="ghost" onClick={() => setView('landing')} className="mt-4">BACK</Button>
+              </form>
+            </motion.div>
+          )}
 
+          {view === 'login-company' && (
+            <motion.div key="c-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
+              <Building2 size={64} className="mx-auto text-[#9df9ef] mb-8" />
+              <h2 className="text-4xl font-black mb-4">Company Portal</h2>
+              <p className="text-gray-500 mb-12">Login to manage your events and staff.</p>
+              <Button onClick={() => handleSignIn('company')} className="w-full">LOGIN WITH GOOGLE</Button>
+              <Button variant="ghost" onClick={() => setView('landing')} className="mt-4">BACK</Button>
+            </motion.div>
+          )}
+
+          {view === 'login-staff' && (
+            <motion.div key="s-login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-md mx-auto py-24 text-center">
+              <ShieldCheck size={64} className="mx-auto text-[#9df9ef] mb-8" />
+              <h2 className="text-4xl font-black mb-4">Staff Portal</h2>
+              <p className="text-gray-500 mb-12">Authorized staff login via email key.</p>
+              <Button onClick={() => handleSignIn('staff')} className="w-full">LOGIN WITH GOOGLE</Button>
+              <Button variant="ghost" onClick={() => setView('landing')} className="mt-4">BACK</Button>
+            </motion.div>
+          )}
+
+          {view === 'events' && (
+            <motion.div key="events" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+              <h2 className="text-4xl font-black">Active Events</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {events.map((event) => (
                   <motion.div
                     key={event.id}
                     whileHover={{ scale: 1.02 }}
-                    className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-3xl group cursor-pointer relative overflow-hidden"
+                    className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-3xl cursor-pointer"
                     onClick={() => { setSelectedEvent(event); setView('form'); }}
                   >
-                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-100 transition-opacity">
-                      <ArrowRight className="text-[#9df9ef]" />
-                    </div>
-                    <h3 className="text-2xl font-black mb-4 group-hover:text-[#9df9ef] transition-colors">
-                      {event.name}
-                    </h3>
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2 text-gray-400 text-sm">
-                        <Building2 size={16} /> {event.company}
-                      </div>
-                      <div className="flex items-center gap-2 text-gray-400 text-sm">
-                        <Calendar size={16} /> {event.date}
-                      </div>
-                      <div className="flex items-center gap-2 text-gray-400 text-sm">
-                        <MapPin size={16} /> {event.location}
-                      </div>
+                    <h3 className="text-2xl font-black mb-4 text-[#9df9ef]">{event.name}</h3>
+                    <div className="space-y-2 text-sm text-gray-400">
+                      <p><Building2 size={14} className="inline mr-2" /> {event.company}</p>
+                      <p><Calendar size={14} className="inline mr-2" /> {event.date}</p>
+                      <p><MapPin size={14} className="inline mr-2" /> {event.location}</p>
                     </div>
                   </motion.div>
                 ))}
@@ -462,245 +492,200 @@ export default function App() {
           )}
 
           {view === 'form' && (
-            <motion.div
-              key="form"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="max-w-xl mx-auto py-12"
-            >
+            <motion.div key="form" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto py-12">
               <div className="text-center mb-12">
-                <p className="text-[#9df9ef] font-black text-xl mb-2">Joining {selectedEvent?.name}</p>
-                <div className="h-1 bg-[#1a1a1a] w-full rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${(step / 4) * 100}%` }}
-                    className="h-full bg-[#9df9ef]"
-                  />
-                </div>
+                <p className="text-[#9df9ef] font-black text-xl">Register for {selectedEvent?.name}</p>
               </div>
-
               <form onSubmit={handleRegister} className="space-y-6">
                 {step === 1 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                  <>
                     <Input label="Full Name" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required />
                     <Input label="Email" type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} required />
-                  </motion.div>
+                  </>
                 )}
                 {step === 2 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                  <>
                     <Input label="Phone Number" type="tel" value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} required />
                     <Input label="Company" value={formData.company} onChange={e => setFormData({ ...formData, company: e.target.value })} required />
-                  </motion.div>
+                  </>
                 )}
-                {step === 3 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                    <Select 
-                      label="Industry" 
-                      value={formData.industry} 
-                      onChange={e => setFormData({ ...formData, industry: e.target.value })}
-                      options={[
-                        { value: 'Technology', label: 'Technology' },
-                        { value: 'Finance', label: 'Finance' },
-                        { value: 'Creative', label: 'Creative' },
-                        { value: 'Other', label: 'Other' },
-                      ]} 
-                    />
-                    <Input label="Goal for Event" value={formData.intent} onChange={e => setFormData({ ...formData, intent: e.target.value })} required />
-                  </motion.div>
-                )}
-                {step === 4 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                    <Select 
-                      label="Registration Type" 
-                      value={formData.type} 
-                      onChange={e => setFormData({ ...formData, type: e.target.value as RegistrationType })}
-                      options={[
-                        { value: 'VISITOR', label: 'Visitor' },
-                        { value: 'EXHIBITOR', label: 'Exhibitor' },
-                      ]} 
-                    />
-                  </motion.div>
-                )}
-
-                <div className="flex gap-4 pt-8">
-                  {step > 1 && (
-                    <Button variant="outline" onClick={() => setStep(step - 1)}>
-                      <ArrowLeft size={20} />
-                    </Button>
-                  )}
-                  {step < 4 ? (
-                    <Button className="flex-1" onClick={() => setStep(step + 1)}>
-                      CONTINUE
-                    </Button>
-                  ) : (
-                    <Button type="submit" className="flex-1">
-                      FINALIZE PASS
-                    </Button>
-                  )}
+                <div className="flex gap-4">
+                  {step > 1 && <Button variant="outline" onClick={() => setStep(step - 1)}>BACK</Button>}
+                  {step < 2 ? <Button className="flex-1" onClick={() => setStep(step + 1)}>CONTINUE</Button> : <Button type="submit" className="flex-1">FINALIZE</Button>}
                 </div>
               </form>
             </motion.div>
           )}
 
-          {view === 'admin' && (
-            <motion.div
-              key="admin"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="space-y-8"
-            >
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <h2 className="text-4xl font-black">Attendance <span className="text-[#9df9ef]">Analytics</span></h2>
-                <div className="flex gap-2">
-                  <Button variant="ghost" className="bg-[#9df9ef]/10" onClick={() => setView('create-event')}>
-                    <Plus size={20} /> NEW EVENT
+          {view === 'company-dash' && (
+            <motion.div key="company-dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+              <div className="flex justify-between items-center">
+                <h2 className="text-4xl font-black">Company <span className="text-[#9df9ef]">Dashboard</span></h2>
+                <div className="flex gap-4">
+                  <Button 
+                    variant="ghost" 
+                    className="text-xs text-[#9df9ef]/40"
+                    onClick={async () => {
+                      if(!confirm('Deploy sample data for your company?')) return;
+                      try {
+                        setLoading(true);
+                        const sampleEvent = await addDoc(collection(db, 'events'), {
+                          name: 'Demo Tech Summit 2026',
+                          company: 'Mainadev Labs',
+                          date: '2026-10-12',
+                          location: 'Virtual Plaza',
+                          companyId: user?.uid,
+                          createdAt: serverTimestamp()
+                        });
+                        alert('Sample event created');
+                      } catch (err) { alert('Error seeding: ' + err); }
+                      finally { setLoading(false); }
+                    }}
+                  >
+                    SEED DEMO DATA
                   </Button>
-                  <Button variant="outline" onClick={() => setView('landing')}>
-                    <LayoutPanelLeft size={20} /> PORTAL
-                  </Button>
+                  <Button variant="ghost" onClick={() => setView('staff-auth')}><Users size={20} /> MANAGE STAFF</Button>
+                  <Button onClick={() => setView('create-event')}><Plus size={20} /> DEPLOY EVENT</Button>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-                {[
-                  { label: 'Total Scans', val: attendees.length, icon: QrCode },
-                  { label: 'Exhibitors', val: attendees.filter(a => a.type === 'EXHIBITOR').length, icon: Building2 },
-                  { label: 'Visitors', val: attendees.filter(a => a.type === 'VISITOR').length, icon: Users },
-                ].map((s, i) => (
-                  <div key={i} className="bg-[#141414] border border-[#1a1a1a] p-8 rounded-3xl">
-                    <p className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2 mb-2">
-                      <s.icon size={14} className="text-[#9df9ef]" /> {s.label}
-                    </p>
-                    <p className="text-5xl font-black">{s.val}</p>
-                  </div>
-                ))}
               </div>
 
               <div className="bg-[#141414] border border-[#1a1a1a] rounded-3xl overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-[#1a1a1a] text-xs font-bold text-gray-500 uppercase tracking-widest">
-                        <th className="px-8 py-4">Attendee</th>
-                        <th className="px-8 py-4">Event</th>
-                        <th className="px-8 py-4">Type</th>
-                        <th className="px-8 py-4">Company</th>
-                        <th className="px-8 py-4">Action</th>
+                <table className="w-full text-left">
+                  <thead className="bg-[#1a1a1a] text-xs font-bold text-gray-500 uppercase">
+                    <tr>
+                      <th className="px-8 py-4">Attendee</th>
+                      <th className="px-8 py-4">Event</th>
+                      <th className="px-8 py-4">Type</th>
+                      <th className="px-8 py-4">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1a1a1a]">
+                    {attendees.filter(a => a.companyId === user?.uid).map(a => (
+                      <tr key={a.id} className="hover:bg-white/5">
+                        <td className="px-8 py-6">
+                          <p className="font-bold">{a.name}</p>
+                          <p className="text-xs text-gray-500">{a.email}</p>
+                        </td>
+                        <td className="px-8 py-6 text-sm">{a.eventId}</td>
+                        <td className="px-8 py-6 uppercase text-[10px] font-black">{a.type}</td>
+                        <td className="px-8 py-6">
+                          <button onClick={() => deleteAttendee(a.id)} className="text-red-500"><Trash2 size={18} /></button>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#1a1a1a]">
-                      {attendees.map((a) => (
-                        <tr key={a.id} className="hover:bg-[#1a1a1a]/50 transition-colors">
-                          <td className="px-8 py-6">
-                            <p className="font-black">{a.name}</p>
-                            <p className="text-xs text-gray-500">{a.email}</p>
-                          </td>
-                          <td className="px-8 py-6 text-sm text-gray-400">{a.eventId}</td>
-                          <td className="px-8 py-6">
-                            <span className={cn(
-                              "text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest border",
-                              a.type === 'VISITOR' ? "border-[#9df9ef]/30 text-[#9df9ef]" : "border-purple-500/30 text-purple-400"
-                            )}>
-                              {a.type}
-                            </span>
-                          </td>
-                          <td className="px-8 py-6 text-sm text-gray-400">{a.company}</td>
-                          <td className="px-8 py-6">
-                            <button 
-                              onClick={() => deleteAttendee(a.id)}
-                              className="text-gray-500 hover:text-red-500 transition-colors"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </motion.div>
           )}
 
-          {view === 'create-event' && (
-            <motion.div
-              key="create-event"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="max-w-xl mx-auto"
-            >
-              <div className="flex justify-between items-center mb-12">
-                <h2 className="text-4xl font-black">Deploy <span className="text-[#9df9ef]">Event</span></h2>
-                <Button variant="ghost" onClick={() => setView('admin')}>CANCEL</Button>
-              </div>
+          {view === 'staff-dash' && (
+            <motion.div key="staff-dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+              <h2 className="text-4xl font-black">Staff Access: <span className="text-[#9df9ef]">Registers</span></h2>
+              {!activeCompanyId ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {staffAuths.length === 0 ? (
+                    <div className="p-12 text-center border-2 border-dashed border-[#1a1a1a] rounded-3xl col-span-full">
+                      <p className="text-gray-500">No authorized companies found for {user?.email}</p>
+                    </div>
+                  ) : (
+                    staffAuths.map(auth => (
+                      <div 
+                        key={auth.id} 
+                        className="p-8 bg-[#141414] border border-[#1a1a1a] rounded-3xl hover:border-[#9df9ef] cursor-pointer transition-colors"
+                        onClick={() => setActiveCompanyId(auth.companyId)}
+                      >
+                        <Building2 className="text-[#9df9ef] mb-4" />
+                        <h4 className="text-xl font-bold">Company ID: {auth.companyId}</h4>
+                        <p className="text-sm text-gray-500 mt-2">Click to view registers</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <div className="bg-[#141414] border border-[#1a1a1a] rounded-3xl p-8">
+                  <div className="flex justify-between items-center mb-8">
+                    <div>
+                      <h4 className="font-bold flex items-center gap-2">
+                        <Building2 size={16} /> Viewing: {activeCompanyId}
+                      </h4>
+                      <p className="text-xs text-gray-500">Authorized Access Only</p>
+                    </div>
+                    <Button variant="outline" onClick={() => setActiveCompanyId(null)}>SWITCH COMPANY</Button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead className="text-xs text-gray-500 uppercase border-b border-[#1a1a1a]">
+                        <tr>
+                          <th className="py-4">Visitor Name</th>
+                          <th className="py-4">Event</th>
+                          <th className="py-4">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#1a1a1a]">
+                        {attendees.map(a => (
+                          <tr key={a.id}>
+                            <td className="py-4 font-bold">{a.name}</td>
+                            <td className="py-4">{a.eventId}</td>
+                            <td className="py-4 text-[#9df9ef] font-black">REGISTERED</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
 
-              <form onSubmit={createEvent} className="bg-[#141414] border border-[#1a1a1a] p-8 rounded-3xl space-y-6">
-                <Input label="Event Name" name="name" required placeholder="Nairobi Tech Expo 2026" />
-                <Input label="Hosting Company" name="company" required placeholder="Mainadev Ltd" />
-                <Input label="Physical Location" name="location" required placeholder="KICC Convention Hall" />
-                <Input label="Event Date" name="date" type="date" required />
-                <Button type="submit" className="w-full">
-                  INITIALIZE DEPLOYMENT
-                </Button>
+          {view === 'staff-auth' && (
+            <motion.div key="staff-auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto space-y-12">
+              <h2 className="text-4xl font-black">Staff <span className="text-[#9df9ef]">Authorizations</span></h2>
+              <form onSubmit={authorizeStaff} className="bg-[#141414] p-8 rounded-3xl border border-[#1a1a1a]">
+                <Input label="Staff Email" name="email" type="email" required placeholder="staff@example.com" />
+                <Button type="submit" className="w-full">GRANT ACCESS</Button>
+              </form>
+              <div className="space-y-4">
+                <h4 className="text-gray-500 font-bold uppercase text-xs">Authorized Staff Members</h4>
+                {staffAuths.filter(s => s.companyId === user?.uid).map(s => (
+                  <div key={s.id} className="p-4 bg-[#1a1a1a] rounded-xl flex justify-between items-center">
+                    <span className="font-bold">{s.staffEmail}</span>
+                    <span className="text-[10px] font-black text-[#9df9ef]">ACTIVE</span>
+                  </div>
+                ))}
+              </div>
+              <Button variant="ghost" onClick={() => setView('company-dash')}>BACK TO DASHBOARD</Button>
+            </motion.div>
+          )}
+
+          {view === 'create-event' && (
+            <motion.div key="create-event" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-xl mx-auto">
+              <h2 className="text-4xl font-black mb-8">Deploy Event</h2>
+              <form onSubmit={createEvent} className="bg-[#141414] p-8 rounded-3xl border border-[#1a1a1a] space-y-6">
+                <Input label="Event Name" name="name" required />
+                <Input label="Hosting Brand" name="company" required />
+                <Input label="Location" name="location" required />
+                <Input label="Date" name="date" type="date" required />
+                <Button type="submit" className="w-full">START DEPLOYMENT</Button>
+                <Button variant="ghost" onClick={() => setView('company-dash')} className="w-full">CANCEL</Button>
               </form>
             </motion.div>
           )}
 
           {view === 'ticket' && lastTicket && (
-            <motion.div
-              key="ticket"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex flex-col items-center gap-12 py-12"
-            >
-              <div className="bg-white text-black p-10 rounded-[2rem] w-full max-w-[400px] text-center shadow-2xl shadow-[#9df9ef]/10 relative overflow-hidden flex flex-col items-center">
+            <motion.div key="ticket" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center gap-12">
+               <div className="bg-white text-black p-10 rounded-[2rem] w-full max-w-[400px] text-center shadow-2xl relative overflow-hidden">
                 <div className="absolute top-0 w-full h-2 bg-[#9df9ef]" />
-                <p className="text-[10px] font-black tracking-[0.3em] text-gray-400 uppercase mb-4">ACCESS GRANTED</p>
-                <h3 className="text-4xl font-black tracking-tighter leading-none mb-2">{lastTicket.name}</h3>
-                <div className="bg-black text-[#9df9ef] px-6 py-2 rounded-full text-xs font-black mb-8">
-                  {lastTicket.type}
-                </div>
-                
-                <div className="bg-[#f0f0f0] p-6 rounded-3xl mb-8">
-                  <QrCode size={160} strokeWidth={1} />
-                </div>
-
-                <div className="w-full text-left space-y-4 pt-6 border-t border-dashed border-gray-300">
-                  <div className="flex justify-between text-[11px] font-bold text-gray-400 uppercase">
-                    <span>Event</span>
-                    <span className="text-black">{lastTicket.eventId}</span>
-                  </div>
-                  <div className="flex justify-between text-[11px] font-bold text-gray-400 uppercase">
-                    <span>Location</span>
-                    <span className="text-black">{lastTicket.eventLocation}</span>
-                  </div>
-                  <div className="flex justify-between text-[11px] font-bold text-gray-400 uppercase">
-                    <span>Issued</span>
-                    <span className="text-black">{new Date().toLocaleDateString()}</span>
-                  </div>
-                </div>
-
-                <div className="mt-8 p-4 bg-[#9df9ef]/10 border border-[#9df9ef]/20 rounded-2xl w-full text-left">
-                  <p className="text-[10px] font-black text-[#80e0d6] uppercase tracking-widest flex items-center gap-2 mb-1">
-                    <CheckCircle2 size={12} /> Digital Signature
-                  </p>
-                  <p className="text-[9px] text-gray-500 font-mono break-all leading-relaxed">
-                    MAINADEV-XPO-PROTO-SEC-2026-{lastTicket.id.toUpperCase()}
-                  </p>
+                <h3 className="text-4xl font-black tracking-tighter leading-none mb-4">{lastTicket.name}</h3>
+                <div className="bg-black text-[#9df9ef] px-6 py-2 rounded-full text-xs font-black inline-block mb-8">{lastTicket.type}</div>
+                <div className="bg-[#f0f0f0] p-6 rounded-3xl mb-8 flex justify-center"><QrCode size={160} /></div>
+                <div className="text-left py-4 border-t border-dashed border-gray-300 space-y-2 text-xs uppercase font-bold text-gray-500">
+                  <div className="flex justify-between"><span>Event</span><span className="text-black">{lastTicket.eventId}</span></div>
+                  <div className="flex justify-between"><span>Issued</span><span className="text-black">{new Date().toLocaleDateString()}</span></div>
                 </div>
               </div>
-
-              <div className="flex gap-4 no-print">
-                <Button onClick={() => window.print()} variant="outline">
-                  <Printer size={20} /> PRINT BADGE
-                </Button>
-                <Button onClick={() => setView('landing')}>
-                  DONE
-                </Button>
-              </div>
+              <Button onClick={() => window.print()} variant="outline"><Printer size={20} /> PRINT BADGE</Button>
+              <Button onClick={() => setView('landing')}>DONE</Button>
             </motion.div>
           )}
         </AnimatePresence>

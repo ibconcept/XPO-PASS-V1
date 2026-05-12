@@ -5,14 +5,14 @@
       "description": "An event being managed by XPO-PASS",
       "type": "object",
       "properties": {
-        "name": { "type": "string", "description": "Name of the event" },
-        "company": { "type": "string", "description": "Hosting company" },
-        "date": { "type": "string", "description": "Date of the event" },
-        "location": { "type": "string", "description": "Physical location" },
-        "createdBy": { "type": "string", "description": "UID of the admin who created it" },
+        "name": { "type": "string" },
+        "company": { "type": "string" },
+        "date": { "type": "string" },
+        "location": { "type": "string" },
+        "companyId": { "type": "string", "description": "UID of the company owner" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "company", "location", "createdBy"]
+      "required": ["name", "company", "location", "companyId"]
     },
     "Attendee": {
       "title": "Attendee",
@@ -28,23 +28,35 @@
         "type": { "type": "string", "enum": ["VISITOR", "EXHIBITOR"] },
         "eventId": { "type": "string" },
         "eventLocation": { "type": "string" },
+        "companyId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["name", "email", "eventId"]
+      "required": ["name", "email", "eventId", "companyId"]
+    },
+    "StaffAuthorization": {
+      "title": "Staff Authorization",
+      "description": "Mapping of staff emails to companies they can manage",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string" },
+        "staffEmail": { "type": "string" },
+        "authorized": { "type": "boolean" }
+      },
+      "required": ["companyId", "staffEmail", "authorized"]
     }
   },
   "firestore": {
     "/events/{eventId}": {
       "schema": "Event",
-      "description": "Collection of active events"
+      "description": "Events created by companies"
     },
     "/attendees/{attendeeId}": {
       "schema": "Attendee",
-      "description": "Collection of registered attendees"
+      "description": "Registered attendees"
     },
-    "/admins/{adminId}": {
-      "schema": "object",
-      "description": "Explicit list of admin UIDs"
+    "/staff_authorizations/{authId}": {
+      "schema": "StaffAuthorization",
+      "description": "Permissions for staff"
     }
   }
 }

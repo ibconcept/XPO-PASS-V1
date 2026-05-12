@@ -8,55 +8,47 @@ service cloud.firestore {
 
     // Global Helpers
     function isSignedIn() { return request.auth != null; }
-    function isAdmin() { 
-      return isSignedIn() && 
-             request.auth.token.email_verified == true && 
-             exists(/databases/$(database)/documents/admins/$(request.auth.uid)); 
-    }
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
     function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    function isOwner(companyId) {
+      return isSignedIn() && request.auth.uid == companyId;
+    }
+
+    function isStaffAuthorized(companyId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/staff_authorizations/$(request.auth.token.email + "_" + companyId));
+    }
 
     // Validation Helpers
     function isValidEvent(data) {
-      return data.keys().hasAll(['name', 'company', 'location', 'createdBy', 'createdAt']) &&
+      return data.keys().hasAll(['name', 'company', 'location', 'companyId', 'createdAt']) &&
              data.keys().size() == 5 &&
-             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             data.company is string && data.company.size() > 0 && data.company.size() <= 100 &&
-             data.location is string && data.location.size() > 0 && data.location.size() <= 200 &&
-             data.createdBy == request.auth.uid &&
+             data.companyId == request.auth.uid &&
              data.createdAt == request.time;
     }
 
     function isValidAttendee(data) {
-      return data.keys().hasAll(['name', 'email', 'phone', 'company', 'industry', 'intent', 'type', 'eventId', 'eventLocation', 'createdAt']) &&
-             // Ensure strict keys
-             data.keys().size() == 10 &&
-             data.name is string && data.name.size() <= 100 &&
-             data.email is string && data.email.size() <= 100 &&
-             data.phone is string && data.phone.size() <= 50 &&
-             data.company is string && data.company.size() <= 100 &&
-             data.industry is string && data.industry.size() <= 100 &&
-             data.intent is string && data.intent.size() <= 500 &&
-             data.type in ['VISITOR', 'EXHIBITOR'] &&
-             data.eventId is string && data.eventId.size() <= 128 &&
-             data.eventLocation is string && data.eventLocation.size() <= 200 &&
+      return data.keys().hasAll(['name', 'email', 'phone', 'company', 'industry', 'intent', 'type', 'eventId', 'eventLocation', 'companyId', 'createdAt']) &&
+             data.keys().size() == 11 &&
              data.createdAt == request.time;
     }
 
     // Collections
     match /events/{eventId} {
       allow read: if true; 
-      allow create: if isAdmin() && isValidId(eventId) && isValidEvent(incoming());
-      allow delete: if isAdmin() && isValidId(eventId);
+      allow create: if isSignedIn() && isValidEvent(incoming());
+      allow delete: if isOwner(existing().companyId);
     }
 
     match /attendees/{attendeeId} {
-      allow create: if isValidId(attendeeId) && isValidAttendee(incoming());
-      allow get, list, delete: if isAdmin();
+      allow create: if true; // Public registration
+      allow get, list: if isOwner(resource.data.companyId) || isStaffAuthorized(resource.data.companyId);
+      allow delete: if isOwner(resource.data.companyId);
     }
 
-    match /admins/{adminId} {
-      allow read: if isAdmin();
+    match /staff_authorizations/{authId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(incoming().companyId) || (existing() != null && isOwner(existing().companyId));
     }
   }
 }
